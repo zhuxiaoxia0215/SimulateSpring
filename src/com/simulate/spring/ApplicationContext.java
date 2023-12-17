@@ -1,8 +1,11 @@
 package com.simulate.spring;
 
+import java.beans.Introspector;
 import java.io.File;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ApplicationContext {
@@ -11,6 +14,7 @@ public class ApplicationContext {
 
     private ConcurrentHashMap<String, BeanDefinition> beanDefinitionMap = new ConcurrentHashMap<>();
     private ConcurrentHashMap<String, Object> singletonObjects = new ConcurrentHashMap<>();
+    private ArrayList<BeanPostProcessor> beanPostProcessorList = new ArrayList<>();
 
 
     public ApplicationContext(Class configClass) {
@@ -32,13 +36,21 @@ public class ApplicationContext {
                     if (fileName.endsWith(".class")) {
                         String className = fileName.substring(fileName.indexOf("com"), fileName.indexOf(".class"));
                         className = className.replace("\\", ".");
-                        System.out.println(className);
                         try {
                             Class<?> aClass = classLoader.loadClass(className);
                             BeanDefinition beanDefinition = new BeanDefinition();
                             beanDefinition.setType(aClass);
                             if (aClass.isAnnotationPresent(Component.class)) {
+
+                                if (BeanPostProcessor.class.isAssignableFrom(aClass)) {
+                                    BeanPostProcessor instance = (BeanPostProcessor) aClass.newInstance();
+                                    beanPostProcessorList.add(instance);
+                                }
+
                                 String beanName = aClass.getAnnotation(Component.class).value();
+                                if ("".equals(beanName)) {
+                                    beanName = Introspector.decapitalize(aClass.getSimpleName());
+                                }
                                 //Bean
                                 if (aClass.isAnnotationPresent(Scope.class)) {
                                     Scope scopeAnnotation = aClass.getAnnotation(Scope.class);
@@ -49,6 +61,10 @@ public class ApplicationContext {
                                 beanDefinitionMap.put(beanName, beanDefinition);
                             }
                         } catch (ClassNotFoundException e) {
+                            e.printStackTrace();
+                        } catch (InstantiationException e) {
+                            e.printStackTrace();
+                        } catch (IllegalAccessException e) {
                             e.printStackTrace();
                         }
                     }
@@ -70,6 +86,32 @@ public class ApplicationContext {
         Class clazz = beanDefinition.getType();
         try {
             Object instance = clazz.getConstructor().newInstance();
+            //依赖注入
+            for (Field f : clazz.getDeclaredFields()) {
+                if (f.isAnnotationPresent(Autowired.class)) {
+                    f.setAccessible(true);
+                    f.set(instance, getBean(f.getName()));
+                }
+            }
+
+            // Aware 回调
+            if (instance instanceof BeanNameAware) {
+                ((BeanNameAware) instance).setBeanName(beanName);
+            }
+            for (BeanPostProcessor beanPostProcessor : beanPostProcessorList) {
+                instance = beanPostProcessor.postProcessBeforeInitialization(beanName, instance);
+            }
+
+            // 初始化
+            if (instance instanceof InitializingBean) {
+                ((InitializingBean) instance).afterPropertiesSet();
+            }
+
+            // BeanPostProcessor(Bean的后置处理器) 初始化后 AOP
+            for (BeanPostProcessor beanPostProcessor : beanPostProcessorList) {
+                instance = beanPostProcessor.postProcessAfterInitialization(beanName, instance);
+            }
+
             return instance;
         } catch (InstantiationException e) {
             e.printStackTrace();
